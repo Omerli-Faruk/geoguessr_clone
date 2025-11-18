@@ -23,6 +23,20 @@ const shuffleArray = (array: any[]) => {
     return array;
 };
 
+// İki coğrafi konum arasındaki mesafeyi (km) hesaplayan yardımcı fonksiyon
+const getDistance = (loc1: LocationItem, loc2: LocationItem) => {
+    const R = 6371; // Dünya'nın yarıçapı (km)
+    const dLat = (loc2.lat - loc1.lat) * Math.PI / 180;
+    const dLon = (loc2.lng - loc1.lng) * Math.PI / 180;
+    const a = 
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(loc1.lat * Math.PI / 180) * Math.cos(loc2.lat * Math.PI / 180) * 
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+};
+
+
 export default function Game({ onGameEnd }: GameProps) {
     const mlyContainerRef = useRef<HTMLDivElement>(null);
     const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -38,7 +52,7 @@ export default function Game({ onGameEnd }: GameProps) {
     const [scoreData, setScoreData] = useState<{ score: number; distance: string } | null>(null);
     const [isMapLarge, setIsMapLarge] = useState(false);
 
-    const [currentRound, setCurrentRound] = useState(1);
+    const [currentRound, setCurrentRound] = useState(0);
     const [sessionScore, setSessionScore] = useState(0);
 
     // 1. BAŞLANGIÇ: Daha Sağlam ve Hata Toleranslı Yükleme
@@ -102,7 +116,7 @@ export default function Game({ onGameEnd }: GameProps) {
                 }
             }
 
-            if (pool.length < 10) {
+            if (pool.length < 1) {
                 setLoadingText("Hata: Yeterli konum bulunamadı! Lütfen reklam engelleyiciyi kontrol edin veya sayfayı yenileyin.");
                 return;
             }
@@ -150,15 +164,22 @@ export default function Game({ onGameEnd }: GameProps) {
             });
 
             mapRef.current = map;
-            startNewRound(pool, 1);
+            startNewRound(1, pool);
         }
     };
 
     useEffect(() => { if (mapRef.current) setTimeout(() => mapRef.current.invalidateSize(), 300); }, [isMapLarge]);
 
     // 3. YENİ TUR
-    const startNewRound = (pool = locationPool, round = currentRound) => {
+    const startNewRound = (round: number, pool = locationPool) => {
+        if (pool.length === 0) {
+            setLoadingText("Oynanacak konum kalmadı, oyun bitiyor...");
+            setTimeout(() => onGameEnd(sessionScore), 2000);
+            return;
+        }
+
         setLoading(true);
+        setCurrentRound(round);
         setLoadingText(`Tur ${round} yükleniyor...`);
         setStatus("playing");
         setScoreData(null);
@@ -170,13 +191,28 @@ export default function Game({ onGameEnd }: GameProps) {
             mapRef.current.setView([20, 0], 2);
         }
 
-        if (pool.length === 0) {
-            setLoadingText("Oynanacak konum kalmadı veya yükleniyor...");
-            setTimeout(() => startNewRound(), 2000);
-            return;
-        }
+        let randomLoc: LocationItem;
+        let locationIndex: number;
+        let attempts = 0;
+        const MIN_DISTANCE = 50; // Minimum 50 km mesafe
 
-        const randomLoc = pool[Math.floor(Math.random() * pool.length)];
+        do {
+            locationIndex = Math.floor(Math.random() * pool.length);
+            randomLoc = pool[locationIndex];
+            attempts++;
+            // Eğer bir önceki konum varsa ve havuzda yeterli seçenek varsa, mesafeyi kontrol et
+            if (targetLoc && pool.length > 1 && attempts < pool.length) {
+                const distance = getDistance(targetLoc, randomLoc);
+                if (distance < MIN_DISTANCE) {
+                    continue; // Çok yakın, başka bir konum seç
+                }
+            }
+            break; // Uygun bir konum bulundu veya deneme hakkı bitti
+        } while (true);
+        
+        const newPool = pool.filter((_, index) => index !== locationIndex);
+        setLocationPool(newPool);
+
         setTargetLoc(randomLoc);
         loadMapillary(randomLoc.id);
     };
@@ -203,7 +239,7 @@ export default function Game({ onGameEnd }: GameProps) {
             setLoadingText("Geçersiz konum, yenisi aranıyor...");
             const newPool = locationPool.filter(loc => loc.id !== imageId);
             setLocationPool(newPool);
-            setTimeout(() => startNewRound(newPool), 500);
+            setTimeout(() => startNewRound(currentRound, newPool), 500);
         }
     };
 
@@ -216,12 +252,7 @@ export default function Game({ onGameEnd }: GameProps) {
         }
 
         const L = await import("leaflet");
-        const R = 6371;
-        const dLat = (guess.lat - targetLoc.lat) * Math.PI / 180;
-        const dLon = (guess.lng - targetLoc.lng) * Math.PI / 180;
-        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(targetLoc.lat * Math.PI / 180) * Math.cos(guess.lat * Math.PI / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        const distanceKm = R * c;
+        const distanceKm = getDistance({ ...targetLoc, lat: guess.lat, lng: guess.lng }, targetLoc);
 
         const score = Math.max(0, 5000 - Math.round(distanceKm));
         setScoreData({ distance: distanceKm.toFixed(1), score });
@@ -237,8 +268,7 @@ export default function Game({ onGameEnd }: GameProps) {
 
     const handleNextRound = () => {
         const nextRound = currentRound + 1;
-        setCurrentRound(nextRound);
-        startNewRound(locationPool, nextRound);
+        startNewRound(nextRound);
     };
 
     return (
@@ -260,11 +290,13 @@ export default function Game({ onGameEnd }: GameProps) {
                     <div className="glass-effect text-white px-6 py-3 rounded-full shadow-lg flex items-center gap-4 animate-bounce">
                         <span className="text-green-400 font-bold text-xl">+{scoreData.score.toLocaleString()} Puan</span>
                         <span className="text-gray-300 text-sm">({scoreData.distance} km)</span>
+                        
                         <button onClick={handleNextRound} className="bg-blue-500/50 px-4 py-1 rounded-full text-sm hover:bg-blue-500/80 font-bold transition-all-fast">
                             Sıradaki Tur →
                         </button>
+                        
                         <button onClick={() => onGameEnd(sessionScore)} className="bg-red-500/50 px-3 py-1 rounded-full text-xs hover:bg-red-500/80 transition-all-fast">
-                            Ana Menü
+                            Oyunu Bitir
                         </button>
                     </div>
                 </div>
