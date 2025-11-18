@@ -24,7 +24,8 @@ const shuffleArray = (array: any[]) => {
 };
 
 // İki coğrafi konum arasındaki mesafeyi (km) hesaplayan yardımcı fonksiyon
-const getDistance = (loc1: LocationItem, loc2: LocationItem) => {
+const getDistance = (loc1: LocationItem | null, loc2: LocationItem | null) => {
+    if (!loc1 || !loc2) return Infinity;
     const R = 6371; // Dünya'nın yarıçapı (km)
     const dLat = (loc2.lat - loc1.lat) * Math.PI / 180;
     const dLon = (loc2.lng - loc1.lng) * Math.PI / 180;
@@ -36,12 +37,59 @@ const getDistance = (loc1: LocationItem, loc2: LocationItem) => {
     return R * c;
 };
 
+// Mapillary resmini yüklemeyi deneyen ve hata durumunda reject eden Promise tabanlı fonksiyon
+const loadMapillaryPromise = (
+    imageId: string, 
+    viewerRef: React.MutableRefObject<any>, 
+    mlyContainerRef: React.RefObject<HTMLDivElement> // Hata düzeltildi: Ref'in null olabileceğini kabul et
+): Promise<void> => {
+    return new Promise(async (resolve, reject) => {
+        const timeout = 8000;
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+        const cleanupAnd = (action: () => void, reason?: string) => {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (viewerRef.current) {
+                viewerRef.current.off("image", successListener);
+            }
+            if (reason) reject(new Error(reason));
+            action();
+        };
+
+        const successListener = () => cleanupAnd(resolve);
+        const failure = (reason: string) => cleanupAnd(() => reject(new Error(reason)));
+
+        try {
+            const { Viewer } = await import("mapillary-js");
+            
+            if (mlyContainerRef.current) {
+                 if (!viewerRef.current) {
+                    viewerRef.current = new Viewer({
+                        accessToken: MAPILLARY_TOKEN,
+                        container: mlyContainerRef.current,
+                        component: { cover: false, marker: true, direction: true },
+                    });
+                    window.addEventListener("resize", () => viewerRef.current.resize());
+                }
+                viewerRef.current.on("image", successListener);
+                await viewerRef.current.moveTo(imageId);
+                timeoutId = setTimeout(() => failure(`Zaman aşımı: ${imageId} yüklenemedi.`), timeout);
+            } else {
+                failure("Mapillary konteyneri bulunamadı.");
+            }
+        } catch (e: any) {
+            failure(`Mapillary hatası: ${e.message}`);
+        }
+    });
+};
+
 
 export default function Game({ onGameEnd }: GameProps) {
     const mlyContainerRef = useRef<HTMLDivElement>(null);
     const mapContainerRef = useRef<HTMLDivElement>(null);
     const viewerRef = useRef<any>(null);
     const mapRef = useRef<any>(null);
+    const previousTargetLocRef = useRef<LocationItem | null>(null);
 
     const [locationPool, setLocationPool] = useState<LocationItem[]>([]);
     const [loading, setLoading] = useState(true);
@@ -55,12 +103,17 @@ export default function Game({ onGameEnd }: GameProps) {
     const [currentRound, setCurrentRound] = useState(0);
     const [sessionScore, setSessionScore] = useState(0);
 
-    // 1. BAŞLANGIÇ: Daha Sağlam ve Hata Toleranslı Yükleme
     useEffect(() => {
+        // *** KALICI ÇÖZÜM: API anahtarını en başta kontrol et ***
+        if (!MAPILLARY_TOKEN) {
+            setLoadingText("Mapillary API anahtarı bulunamadı! Lütfen .env.local dosyanızı kontrol edin.");
+            return;
+        }
+
         const fetchLocationsForAreas = async (areas: AreaItem[]): Promise<LocationItem[]> => {
             const promises = areas.map(area => {
                 const bbox = area.bbox.join(',');
-                const url = `https://graph.mapillary.com/images?access_token=${MAPILLARY_TOKEN}&fields=id,computed_geometry&limit=75&is_pano=true&bbox=${bbox}`;
+                const url = `https://graph.mapillary.com/images?access_token=${MAPILLARY_TOKEN}&fields=id,computed_geometry&limit=100&is_pano=true&bbox=${bbox}`;
                 return fetch(url).then(res => {
                     if (!res.ok) throw new Error(`HTTP error! status: ${res.status} for area ${area.name}`);
                     return res.json();
@@ -68,7 +121,7 @@ export default function Game({ onGameEnd }: GameProps) {
             });
 
             const settledResults = await Promise.allSettled(promises);
-            const pool: LocationItem[] = [];
+            let allLocations: LocationItem[] = [];
 
             for (const settledResult of settledResults) {
                 if (settledResult.status === 'fulfilled') {
@@ -76,7 +129,7 @@ export default function Game({ onGameEnd }: GameProps) {
                     if (result.data && result.data.length > 0) {
                         for (const image of result.data) {
                             if (image.computed_geometry && image.computed_geometry.coordinates) {
-                                pool.push({
+                                allLocations.push({
                                     id: image.id,
                                     lat: image.computed_geometry.coordinates[1],
                                     lng: image.computed_geometry.coordinates[0],
@@ -89,40 +142,26 @@ export default function Game({ onGameEnd }: GameProps) {
                     console.warn("Bir bölge için konum çekme başarısız (Reklam engelleyici veya ağ hatası olabilir):", settledResult.reason.message);
                 }
             }
-            return pool;
+            
+            const uniqueLocations = Array.from(new Map(allLocations.map(loc => [loc.id, loc])).values());
+            
+            return uniqueLocations;
         };
 
         const initializeGame = async () => {
-            const MIN_POOL_SIZE = 20;
-            const BATCH_SIZE = 5;
-
             const areaResponse = await fetch('/countries.json');
             let allAreas: AreaItem[] = await areaResponse.json();
             allAreas = shuffleArray(allAreas);
 
-            let pool: LocationItem[] = [];
-            
-            while (pool.length < MIN_POOL_SIZE && allAreas.length > 0) {
-                const currentBatch = allAreas.splice(0, BATCH_SIZE);
-                setLoadingText(`Daha fazla konum aranıyor...`);
-                
-                try {
-                    const newLocations = await fetchLocationsForAreas(currentBatch);
-                    if (newLocations.length > 0) {
-                        pool = [...pool, ...newLocations];
-                    }
-                } catch (error) {
-                    console.error("Konum getirme sırasında bir hata oluştu:", error);
-                }
-            }
+            setLoadingText(`Konumlar getiriliyor...`);
+            const uniquePool = await fetchLocationsForAreas(allAreas);
 
-            if (pool.length < 1) {
+            if (uniquePool.length < 5) {
                 setLoadingText("Hata: Yeterli konum bulunamadı! Lütfen reklam engelleyiciyi kontrol edin veya sayfayı yenileyin.");
                 return;
             }
 
-            const finalPool = shuffleArray(pool);
-            setLocationPool(finalPool);
+            const finalPool = shuffleArray(uniquePool);
             initGame(finalPool);
         };
 
@@ -138,7 +177,6 @@ export default function Game({ onGameEnd }: GameProps) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // 2. OYUN KURULUMU
     const initGame = async (pool: LocationItem[]) => {
         const L = await import("leaflet");
         // @ts-ignore
@@ -168,19 +206,44 @@ export default function Game({ onGameEnd }: GameProps) {
         }
     };
 
-    useEffect(() => { if (mapRef.current) setTimeout(() => mapRef.current.invalidateSize(), 300); }, [isMapLarge]);
-
-    // 3. YENİ TUR
-    const startNewRound = (round: number, pool = locationPool) => {
-        if (pool.length === 0) {
-            setLoadingText("Oynanacak konum kalmadı, oyun bitiyor...");
+    const tryNextLocation = async (round: number, currentPool: LocationItem[]) => {
+        if (currentPool.length === 0) {
+            setLoadingText("Oynanacak konum kalmadı, oyun bitiyor!");
             setTimeout(() => onGameEnd(sessionScore), 2000);
             return;
         }
 
         setLoading(true);
-        setCurrentRound(round);
+        setLoadingText("Konum doğrulanıyor...");
+
+        const pool = [...currentPool];
+        const MIN_DISTANCE = 50;
+
+        const shuffledIndexes = shuffleArray([...pool.keys()]);
+        const farIndex = shuffledIndexes.find(i => getDistance(previousTargetLocRef.current, pool[i]) >= MIN_DISTANCE);
+        const selectedIndex = farIndex !== undefined ? farIndex : shuffledIndexes[0];
+        
+        const potentialLoc = pool[selectedIndex];
+        const nextPool = pool.filter((_, i) => i !== selectedIndex);
+
+        try {
+            await loadMapillaryPromise(potentialLoc.id, viewerRef, mlyContainerRef);
+            
+            setLoading(false);
+            setTargetLoc(potentialLoc);
+            setLocationPool(nextPool);
+            previousTargetLocRef.current = potentialLoc;
+
+        } catch (error) {
+            console.warn(error);
+            tryNextLocation(round, nextPool);
+        }
+    };
+
+    const startNewRound = (round: number, pool: LocationItem[]) => {
+        setLoading(true);
         setLoadingText(`Tur ${round} yükleniyor...`);
+        setCurrentRound(round);
         setStatus("playing");
         setScoreData(null);
         setIsMapLarge(false);
@@ -191,59 +254,9 @@ export default function Game({ onGameEnd }: GameProps) {
             mapRef.current.setView([20, 0], 2);
         }
 
-        let randomLoc: LocationItem;
-        let locationIndex: number;
-        let attempts = 0;
-        const MIN_DISTANCE = 50; // Minimum 50 km mesafe
-
-        do {
-            locationIndex = Math.floor(Math.random() * pool.length);
-            randomLoc = pool[locationIndex];
-            attempts++;
-            // Eğer bir önceki konum varsa ve havuzda yeterli seçenek varsa, mesafeyi kontrol et
-            if (targetLoc && pool.length > 1 && attempts < pool.length) {
-                const distance = getDistance(targetLoc, randomLoc);
-                if (distance < MIN_DISTANCE) {
-                    continue; // Çok yakın, başka bir konum seç
-                }
-            }
-            break; // Uygun bir konum bulundu veya deneme hakkı bitti
-        } while (true);
-        
-        const newPool = pool.filter((_, index) => index !== locationIndex);
-        setLocationPool(newPool);
-
-        setTargetLoc(randomLoc);
-        loadMapillary(randomLoc.id);
+        tryNextLocation(round, pool);
     };
 
-    const loadMapillary = async (imageId: string) => {
-        const { Viewer } = await import("mapillary-js");
-        try {
-            if (viewerRef.current) {
-                await viewerRef.current.moveTo(imageId);
-            } else if (mlyContainerRef.current) {
-                viewerRef.current = new Viewer({
-                    accessToken: MAPILLARY_TOKEN,
-                    container: mlyContainerRef.current,
-                    imageId: imageId,
-                    component: { cover: false, marker: true, direction: true },
-                });
-                window.addEventListener("resize", () => viewerRef.current.resize());
-            }
-            viewerRef.current.on("image", () => setLoading(false));
-            setLoading(false);
-        } catch (error) {
-            console.error(`Mapillary resmi (${imageId}) yüklenemedi, havuzdan başka bir resim deneniyor.`, error);
-            setLoading(true);
-            setLoadingText("Geçersiz konum, yenisi aranıyor...");
-            const newPool = locationPool.filter(loc => loc.id !== imageId);
-            setLocationPool(newPool);
-            setTimeout(() => startNewRound(currentRound, newPool), 500);
-        }
-    };
-
-    // 4. TAHMİN ETME
     const handleGuess = async () => {
         const guess = (window as any).userGuess;
         if (!guess || !targetLoc) {
@@ -267,8 +280,7 @@ export default function Game({ onGameEnd }: GameProps) {
     };
 
     const handleNextRound = () => {
-        const nextRound = currentRound + 1;
-        startNewRound(nextRound);
+        startNewRound(currentRound + 1, locationPool);
     };
 
     return (
