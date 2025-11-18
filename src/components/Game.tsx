@@ -38,49 +38,51 @@ const getDistance = (loc1: LocationItem | null, loc2: LocationItem | null) => {
 };
 
 // Mapillary resmini yüklemeyi deneyen ve hata durumunda reject eden Promise tabanlı fonksiyon
-const loadMapillaryPromise = (
-    imageId: string, 
-    viewerRef: React.MutableRefObject<any>, 
-    mlyContainerRef: React.RefObject<HTMLDivElement> // Hata düzeltildi: Ref'in null olabileceğini kabul et
+const loadMapillaryPromise = async (
+    imageId: string,
+    viewerRef: any,
+    mlyContainerRef: React.RefObject<HTMLDivElement | null>
 ): Promise<void> => {
-    return new Promise(async (resolve, reject) => {
-        const timeout = 8000;
-        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeout = 8000;
 
-        const cleanupAnd = (action: () => void, reason?: string) => {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (viewerRef.current) {
-                viewerRef.current.off("image", successListener);
-            }
-            if (reason) reject(new Error(reason));
-            action();
-        };
-
-        const successListener = () => cleanupAnd(resolve);
-        const failure = (reason: string) => cleanupAnd(() => reject(new Error(reason)));
-
+    const loadAction = () => new Promise<void>(async (resolve, reject) => {
         try {
             const { Viewer } = await import("mapillary-js");
-            
-            if (mlyContainerRef.current) {
-                 if (!viewerRef.current) {
-                    viewerRef.current = new Viewer({
-                        accessToken: MAPILLARY_TOKEN,
-                        container: mlyContainerRef.current,
-                        component: { cover: false, marker: true, direction: true },
-                    });
-                    window.addEventListener("resize", () => viewerRef.current.resize());
-                }
-                viewerRef.current.on("image", successListener);
-                await viewerRef.current.moveTo(imageId);
-                timeoutId = setTimeout(() => failure(`Zaman aşımı: ${imageId} yüklenemedi.`), timeout);
-            } else {
-                failure("Mapillary konteyneri bulunamadı.");
+
+            if (!mlyContainerRef.current) {
+                return reject(new Error("Mapillary container not found."));
             }
+
+            if (!viewerRef.current) {
+                viewerRef.current = new Viewer({
+                    accessToken: MAPILLARY_TOKEN,
+                    container: mlyContainerRef.current,
+                    component: { cover: false, marker: true, direction: true },
+                });
+                window.addEventListener("resize", () => viewerRef.current?.resize());
+            }
+
+            const viewer = viewerRef.current;
+
+            const imageListener = () => {
+                viewer.off("image", imageListener);
+                resolve();
+            };
+            viewer.on("image", imageListener);
+
+            await viewer.moveTo(imageId);
         } catch (e: any) {
-            failure(`Mapillary hatası: ${e.message}`);
+            reject(new Error(`Mapillary error: ${e.message}`));
         }
     });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+            reject(new Error(`Timeout: ${imageId} could not be loaded.`));
+        }, timeout);
+    });
+
+    await Promise.race([loadAction(), timeoutPromise]);
 };
 
 
@@ -231,7 +233,7 @@ export default function Game({ onGameEnd }: GameProps) {
             
             setLoading(false);
             setTargetLoc(potentialLoc);
-            setLocationPool(nextPool);
+setLocationPool(nextPool);
             previousTargetLocRef.current = potentialLoc;
 
         } catch (error) {
