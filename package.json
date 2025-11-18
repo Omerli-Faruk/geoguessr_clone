@@ -1,5 +1,5 @@
 {
-  "name": "untitled4",
+  "name": "geoguessr_clone",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -10,6 +10,9 @@
     "format": "biome format --write"
   },
   "dependencies": {
+    "js-cookie": "^3.0.5",
+    "leaflet": "^1.9.4",
+    "mapillary-js": "^4.1.2",
     "next": "16.0.3",
     "react": "19.2.0",
     "react-dom": "19.2.0"
@@ -17,6 +20,8 @@
   "devDependencies": {
     "@biomejs/biome": "2.2.0",
     "@tailwindcss/postcss": "^4",
+    "@types/js-cookie": "^3.0.6",
+    "@types/leaflet": "^1.9.21",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

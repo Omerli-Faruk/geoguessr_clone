@@ -1,26 +1,57 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    /* Renkler */
+    --background-start-rgb: 15, 23, 42; /* slate-900 */
+    --background-end-rgb: 0, 0, 0;
+    --foreground-rgb: 255, 255, 255;
+    
+    /* Cam Efekti */
+    --glass-bg-color: rgba(30, 41, 59, 0.7); /* slate-800 with 70% opacity */
+    --glass-border-color: rgba(71, 85, 105, 0.5); /* slate-600 with 50% opacity */
+    --glass-blur: 12px;
+
+    /* Animasyon */
+    --transition-fast: 300ms;
+    --transition-slow: 500ms;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Arka Plan Gradient Animasyonu */
+@keyframes gradient-animation {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animated-gradient {
+  background: linear-gradient(
+    -45deg,
+    #0284c7, /* sky-600 */
+    #10b981, /* emerald-500 */
+    #3b82f6, /* blue-500 */
+    #8b5cf6  /* violet-500 */
+  );
+  background-size: 400% 400%;
+  animation: gradient-animation 15s ease infinite;
+}
+
+/* Daha akıcı geçişler için utility class */
+.transition-all-fast {
+  transition: all var(--transition-fast) ease-in-out;
+}
+
+/* Cam efekti için utility class */
+.glass-effect {
+  background-color: var(--glass-bg-color);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border-color);
 }
