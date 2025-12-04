@@ -33,7 +33,7 @@ export default function Home() {
     if (savedTotalScore) {
       setTotalScore(parseInt(savedTotalScore, 10));
     }
-    
+
     setIsHydrated(true);
   }, []);
 
